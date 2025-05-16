@@ -1,15 +1,15 @@
-Tutorial for installing the server (Tested on Raspberry Pi 4):
+# Tutorial for installing the server (verified on Raspberry Pi 4):
 
-Install dotnet 7.0 or whichever your version uses, either manually or with this command:
+## Begin by installing dotnet 7.0 or the version required for your setup. This can be done manually or using the following:
 
-```wget -O - https://raw.githubusercontent.com/pjgpetecodes/dotnet7pi/master/install.sh | sudo bash```
+```wget -O - https://raw.githubusercontent.com/pjgpetecodes/dotnet7pi/master/install.sh | sudo bash``` 
 
-Run the serverinstall script:
+
+Download and execute the server installation script:
 
 ```./serverinstall.sh -b BRANCH -v VERSION -d DIRECTORY```
-Example:
-```./serverinstall.sh -b stable -v 1.20.6 -d /home/pi/vs_server```
+> e.g: ```./serverinstall.sh -b stable -v 1.20.6 -d /home/pi/vs_server```
 
-Running the server (in the server directory):
+## To run the server (within the server directory):
 
 ```./VintagestoryServer```
