@@ -1,6 +1,6 @@
 ## Setting up a Dedicated Vintage Story Server on Raspberry Pi 4/5
 
-Running a dedicated, unmodded Vintage Story server for 2-3 players on a Raspberry Pi 4 or 5 can be a surprisingly viable option. Below you'll find the necessary files and steps to get your server up and running. I've also included a basic Python script for implementing server status LEDs, start buttons, or an I2C LCD1602 display.
+Running a dedicated, unmodded Vintage Story server for 2-3 players on a Raspberry Pi 4 or 5 can be a surprisingly viable option. Here you'll find the necessary files and steps to get your server up and running. I've also made a basic python script for implementing server status LEDs, start buttons, or an I2C LCD1602 display, using the GPIO pins.
 
 **Important Considerations:**
 
