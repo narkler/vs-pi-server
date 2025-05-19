@@ -8,7 +8,7 @@ import os
 
 class ServerController:
 	def __init__(self):
-		self.vs_path = f"/home/{str(os.getlogin())}/vintagestory" # Set this to the path of your server unless you are using the default install path from the serverinstall.sh script
+		self.vs_path = f"/home/{str(os.getlogin())}/vs_server" # Set this to the path of your server unless you are using the default install path from the serverinstall.sh script
 		self.vslog_path = f"/home/{str(os.getlogin())}/.config/VintagestoryData/Logs/server-main.log" # If you have a custom vs data path, you will have to change this
 
 		self.server_running = False # Running means the server is on but still starting
@@ -99,11 +99,15 @@ class ServerController:
 			if "joins." in line:
 				print(f"\033[95m{line}\033[0m")
 				self.plrcount += 1
-				self.lcd and DisplayMethods.tickplayercounter()
+				if self.lcd:
+					DisplayMethods.plrcount = self.plrcount
+					DisplayMethods.tickplayercounter()
 			elif "left." in line:
 				print(f"\033[95m{line}\033[0m")
 				self.plrcount -= 1
-				self.lcd and DisplayMethods.tickplayercounter()
+				if self.lcd:
+					DisplayMethods.plrcount = self.plrcount
+					DisplayMethods.tickplayercounter()
 			time.sleep(0.1)
 	def gpu_usage(self):
 			try:
@@ -232,4 +236,3 @@ if __name__ == "__main__":
 	server_controller = ServerController()
 	print("\033[94mVintage Story server script running!\033[0m", "\n\n\033[1mPress the button to start / stop the server\033[0m")
 	pause()
-
