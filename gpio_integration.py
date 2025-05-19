@@ -1,229 +1,235 @@
 import gpiozero as gpio
-
 from signal import pause
-from pathlib import Path
 from RPLCD.i2c import CharLCD
-
 import threading
 import subprocess
 import time
+import os
 
-# Change this to the path of your server
-# If you ran the install script, the default path is: "/home/user/vintagestory"
+class ServerController:
+	def __init__(self):
+		self.vs_path = f"/home/{str(os.getlogin())}/vintagestory" # Set this to the path of your server unless you are using the default install path from the serverinstall.sh script
+		self.vslog_path = f"/home/{str(os.getlogin())}/.config/VintagestoryData/Logs/server-main.log" # If you have a custom vs data path, you will have to change this
 
-vs_path = "/home/server/vs_server"
+		self.server_running = False # Running means the server is on but still starting
+		self.server_operational = False # Operational means the server is fully running and players can join
+		self.shutdownqueued = False
+		self.plrcount = 0
 
-# Change this to the path of your main server log
-# Logs are typically located in "/home/user/.config/VintagestoryData/Logs"
+		# Set these to use whichever gpio pins you're using for your components, or if you aren't using it just leave it as is
+		# Keep in mind every component will still be "active" and the gpio will still be sending signals even if you don't use them
+		# This also means you shouldn't run this script while doing any wiring with the gpio pins
 
-vslog_path = "/home/server/.config/VintagestoryData/Logs/server-main.log"
-
-server_running = False # Running means the server is on but still starting
-server_operational = False # Operational means the server is fully running and players can join
-shutdownqueued = False
-plrcount = 0
-
-# Change the numbers to the GPIO pins your components are on
-
-# If you aren't using any components, just leave it as it, but
-# make sure all of the unused components aren't using any of the
-# active components same gpio, since they are still "active" and sending signals
-
-# This also means you shouldn't have this script running if you are doing any wiring / adding more external components
-
-statusled = gpio.LED(6)
-overloadled = gpio.PWMLED(5)
-startbutton = gpio.Button(26)
-queuedshutdownled = gpio.LED(22)
-
-lcd = CharLCD('PCF8574', 0x27)
-lcd.clear()
-
-# The event listener constantly checks the main log file for the specificed words
-# If the line has "Dedicated Server now running", it can run code, like printing the line
-
-def eventlistener():
-	global server_operational, server_running, shutdownqueued, plrcount
-
-	process = subprocess.Popen(
-		["tail", "-n", "0", "-F", vslog_path],
-		stdout=subprocess.PIPE,
-		stderr=subprocess.PIPE,
-		text=True,
-		bufsize=1
-	)
-
-	while True:
-		if not server_running:
-			break
-
-		line = process.stdout.readline().strip()
-
-		if not line:
-			continue
-
-		if "Dedicated Server now running" in line:
-			print(line) # Prints the whole line
-			server_operational = True
-
-			statusled.on()
-
-			usageannouncer = threading.Thread(target=announce_usage, daemon=True)
-			usageannouncer.start()
-			# ^^^ Comment these two lines out if you don't want gpu / cpu usage to be announced in chat
-
-			DisplayMethods.running()
-			DisplayMethods.tickplayercounter()
-			
-		if "overloaded" in line:
-			print(f"\033[31m{line}\033[0m")
-
-			led_blink = threading.Thread(target=ledblink, args=(overloadled, 2), daemon=True)
-			led_blink.start()
-
-		if "Stopped the server!" in line:
-			shutdownqueued=False
-			server_operational, server_running = False, False
-
-			statusled.off()
-			overloadled.off()
-			queuedshutdownled.off()
+		self.statusled = gpio.LED(6)
+		self.overloadled = gpio.PWMLED(5)
+		self.startbutton = gpio.Button(26, bounce_time=0.1)
+		self.queuedshutdownled = gpio.LED(22)
+		try:
+			self.lcd = CharLCD('PCF8574', 0x27)
+			self.lcd.clear()
+		except:
+			print("No LCD Found")
+			self.lcd = None
+		if self.lcd:
+			# Positions for status and player counter on the lcd screen
+			self.playercounter_pos = (1,0) # Row / Column
+			self.status_pos = (0,0)
+			# Status messages, 16 letters and under usually
+			self.messages = {
+			"inactive_msg": "Server inactive ",
+			"starting_msg": "Server starting!",
+			"running_msg": "Server running   ",
+			"queued_msg": "Shutdown queued   "
+			}
+			DisplayMethods.lcd = self.lcd
+			DisplayMethods.playercounter_pos = self.playercounter_pos
+			DisplayMethods.status_pos = self.status_pos
+			DisplayMethods.messages = self.messages
+			DisplayMethods.plrcount = self.plrcount
 			DisplayMethods.inactive()
-			DisplayMethods.clearplayercounter()
+		self.blinking = {}
+		self.startbutton.when_pressed = self.startvs
 
-			print("Server successfully shutdown")
+	# This function constantly checks the main log file for any specificed lines then executes a function
 
-		if "Loaded" in line or "Starting world" in line:
-			print(f"\033[94m{line}\033[0m")
-
-		if "pausing game" in line or "resuming game" in line:
-			print(f"\033[33m{line}\033[0m")
-
-		if "joins." in line:
-			print(f"\033[95m{line}\033[0m")
-			plrcount += 1
-			DisplayMethods.tickplayercounter()
-		elif "left." in line:
-			print(f"\033[95m{line}\033[0m")
-			plrcount -= 1
-			DisplayMethods.tickplayercounter()
-		time.sleep(0.1)
-
-playercounter_pos = (1,0)
-status_pos = (0,0)
-messages = {
-    "inactive_msg": "Server inactive ",
-    "starting_msg": "Server starting!",
-    "running_msg": "Server running  ",
-    "queued_msg": "Shutdown queued "
-}
-
-# All the functions you can use to write a built-in message to the lcd at the given position
-
-class DisplayMethods:
-	def tickplayercounter(): # Updates the lcd with the current player count when called
-		lcd.cursor_pos = playercounter_pos
-		lcd.write_string(f"Player count: {plrcount}")
-	def clearplayercounter():
-		lcd.cursor_pos = playercounter_pos
-		lcd.write_string("                ")
-	def inactive():
-		lcd.cursor_pos = status_pos
-		lcd.write_string(messages["inactive_msg"])
-	def starting():
-		lcd.cursor_pos = status_pos
-		lcd.write_string(messages["starting_msg"])
-	def running():
-		lcd.cursor_pos = status_pos
-		lcd.write_string(messages["running_msg"])
-	def queued():
-		lcd.cursor_pos = status_pos
-		lcd.write_string(messages["queued_msg"])
-DisplayMethods.inactive()
-
-# Functions to calculate gpu / cpu usage
-
-def gpu_usage():
-		clock_speed = subprocess.run(
-			["vcgencmd", "measure_clock", "core"],
+	def eventlistener(self):
+		process = subprocess.Popen(
+			["tail", "-n", "0", "-F", self.vslog_path],
 			stdout=subprocess.PIPE,
-			text=True
+			stderr=subprocess.PIPE,
+			text=True,
+			bufsize=1
 		)
-		clock_speed = int(clock_speed.stdout.split("=")[1]) / 1000000
-		gpu_usage = (clock_speed / 500) * 100
-		return int(gpu_usage)
-def cpu_usage():
-		clock_speed = subprocess.run(
-		["vcgencmd", "measure_clock", "arm"],
-		stdout=subprocess.PIPE,
-		text=True,
-		)
-		clock_speed = int(clock_speed.stdout.split("=")[1]) / 1000000
-		cpu_usage = (clock_speed / 1500) * 100
-		return int(cpu_usage)
+		while True:
+			if not self.server_running:
+				break
+			line = process.stdout.readline().strip()
+			if not line:
+				continue
+			if "Dedicated Server now running" in line:
+				print(line) # Prints the whole line
+				self.server_operational = True
+				print(self.server_operational)
+				self.statusled.on()
+				usageannouncer = threading.Thread(target=self.announce_usage, daemon=True)
+				usageannouncer.start()
+				if self.lcd:
+					DisplayMethods.running()
+					DisplayMethods.tickplayercounter()
+			if "overloaded" in line:
+				print(f"\033[31m{line}\033[0m")
+				led_blink = threading.Thread(target=self.ledblink, args=(self.overloadled, 2), daemon=True)
+				led_blink.start()
+			if "Stopped the server!" in line:
+				self.shutdownqueued=False
+				self.server_operational, self.server_running = False, False
+				self.statusled.off()
+				self.overloadled.off()
+				self.queuedshutdownled.off()
+				if self.lcd:
+					DisplayMethods.inactive()
+					DisplayMethods.clearplayercounter()
+				print("Server successfully shutdown")
+			if "Loaded" in line or "Starting world" in line:
+				print(f"\033[94m{line}\033[0m")
 
-# Announces the gpu and cpu usage in chat if it's over 60%
+			if "pausing game" in line or "resuming game" in line:
+				print(f"\033[33m{line}\033[0m")
 
-def announce_usage():
-	while True:
-		if not server_operational:
-			break
-		gpu = gpu_usage()
-		cpu = cpu_usage()
-		if cpu >= 60 or cpu >= 60:
-			subprocess.run(
-				["screen", "-S", "vs_server", "-X", "stuff", f"/announce CPU Usage: {str(cpu)}%, GPU Usage: {str(gpu)}%\n"]
-			)
-		time.sleep(10)
-def startvs():
-	global server_running, shutdownqueued
-	if shutdownqueued:
-		print("Shutdown already queued.")
+			if "joins." in line:
+				print(f"\033[95m{line}\033[0m")
+				self.plrcount += 1
+				self.lcd and DisplayMethods.tickplayercounter()
+			elif "left." in line:
+				print(f"\033[95m{line}\033[0m")
+				self.plrcount -= 1
+				self.lcd and DisplayMethods.tickplayercounter()
+			time.sleep(0.1)
+	def gpu_usage(self):
+			try:
+				clock_speed = subprocess.run(
+					["vcgencmd", "measure_clock", "core"],
+					stdout=subprocess.PIPE,
+					text=True
+				)
+			except:
+				print("Failed getting gpu usage")
+				return
+			clock_speed = int(clock_speed.stdout.split("=")[1]) / 1000000
+			gpu_usage = (clock_speed / 500) * 100
+			return int(gpu_usage)
+	def cpu_usage(self):
+			try:
+				clock_speed = subprocess.run(
+				["vcgencmd", "measure_clock", "arm"],
+				stdout=subprocess.PIPE,
+				text=True,
+				)
+			except:
+				print("Failed getting cpu usage")
+				return
+			clock_speed = int(clock_speed.stdout.split("=")[1]) / 1000000
+			cpu_usage = (clock_speed / 1500) * 100
+			return int(cpu_usage)
+	def announce_usage(self):
+		while self.server_operational:
+			gpu = self.gpu_usage()
+			cpu = self.cpu_usage()
+			if not cpu or gpu:
+				return
+			if cpu >= 60 or cpu >= 60:
+				try:
+					subprocess.run(
+						["screen", "-S", "vs_server", "-X", "stuff", f"/announce CPU Usage: {str(cpu)}%, GPU Usage: {str(gpu)}%\n"]
+					)
+				except:
+					return
+			time.sleep(10)
+	def startvs(self):
+		if self.shutdownqueued:
+			print("Shutdown already queued.")
+			return
 
-	if server_operational and not shutdownqueued:
-		shutdownqueued=True
-		queuedshutdownled.on()
+		if self.server_operational and not self.shutdownqueued:
+			self.shutdownqueued=True
+			self.queuedshutdownled.on()
+			self.stopvs()
 
-		DisplayMethods.queued()
+			self.lcd and DisplayMethods.queued()
+			print("Shutting down server...")
+			return
 
-		print("Shutting down server...")
-		stopvs()
-		return
+		if self.server_running:
+			if not self.server_operational and not self.shutdownqueued:
+				self.shutdownqueued=True
+				self.queuedshutdownled.on()
+				self.stopvs()
 
-	if server_running:
-		if not server_operational and not shutdownqueued:
-			shutdownqueued=True
-			queuedshutdownled.on()
+				self.lcd and DisplayMethods.queued()
+				print("Queued server shutdown (server still starting)")	
+			return
+		try:
+			subprocess.run(["screen", "-S", "vs_server", "-dm", f"{self.vs_path}/VintagestoryServer"]) # Starts the server
+		except:
+			print("Failed to run server start command")
+			return
+		print("Starting Vintage Story server... Will take \033[33m~2\033[0m mins")
+		self.server_running = True
 
-			DisplayMethods.queued()
+		event_listener = threading.Thread(target=self.eventlistener, daemon=True)
+		event_listener.start()
+		self.lcd and DisplayMethods.starting()
+	def stopvs(self):
+		try:
+			subprocess.run(["screen", "-S", "vs_server", "-X", "stuff", "/stop\n"])
+		except:
+			print("Failed to run server stop command")
+			return
+	def ledblink(self, led, amount):
+		if self.blinking.get(led):
+			return
+		self.blinking[led] = True
+		led.pulse(fade_in_time=0.5, fade_out_time=0.5, n=amount, background=False)
+		self.blinking.pop(led, None)
+class DisplayMethods:
+	lcd = None
+	playercounter_pos = ()
+	plrcount = None
+	status_pos = ()
+	messages = {}
 
-			print("Queued server shutdown")
-			stopvs()
-		return
+	@classmethod
+	def write(cls, pos, msg):
+		cls.lcd.cursor_pos = pos
+		cls.lcd.write_string(msg)
 
-	subprocess.run(["screen", "-S", "vs_server", "-dm", f"{vs_path}/VintagestoryServer"]) # Starts the server
-	print("Starting Vintage Story server... Will take \033[33m~2\033[0m mins")
-	server_running = True
+	@classmethod
+	def tickplayercounter(cls): # Updates the lcd with the current player count when called
+		cls.lcd.cursor_pos = cls.playercounter_pos
+		cls.lcd.write_string(f"Player count: {cls.plrcount}")
+	
+	@classmethod
+	def clearplayercounter(cls):
+		cls.write(cls.playercounter_pos, "                ")
+	
+	@classmethod
+	def inactive(cls):
+		cls.write(cls.status_pos, cls.messages["inactive_msg"])
 
-	event_listener = threading.Thread(target=eventlistener, daemon=True)
-	event_listener.start()
-	DisplayMethods.starting()
-def stopvs():
-	subprocess.run(["screen", "-S", "vs_server", "-X", "stuff", "/stop\n"])
+	@classmethod
+	def starting(cls):
+		cls.write(cls.status_pos, cls.messages["starting_msg"])
 
-blinking = {}
-def ledblink(led, amount):
-	if blinking.get(led):
-		return
-	blinking[led] = True
-	led.pulse(fade_in_time=0.5, fade_out_time=0.5, n=amount, background=False)
-	blinking.pop(led, None)
+	@classmethod
+	def running(cls):
+		cls.write(cls.status_pos, cls.messages["running_msg"])
 
-startbutton.when_pressed = startvs
+	@classmethod
+	def queued(cls):
+		cls.write(cls.status_pos, cls.messages["queued_msg"])
 
-print(
-"\033[94mVintage Story server script running!\033[0m",
-"\n\n\033[1mPress the button to start / stop the server\033[0m",
-)
+if __name__ == "__main__":
+	server_controller = ServerController()
+	print("\033[94mVintage Story server script running!\033[0m", "\n\n\033[1mPress the button to start / stop the server\033[0m")
+	pause()
 
-pause()
